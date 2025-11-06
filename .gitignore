@@ -214,5 +214,9 @@ __marimo__/
 # ------------------------------------------------------------------------
 # Ignore all data files but keep subfolder structure 
 # ------------------------------------------------------------------------
+# Ignore everything under data/
 data/**/*
+
+# ...but keep the directories themselves
 !data/**/
+!data/**/.gitkeep
