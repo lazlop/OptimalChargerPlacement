@@ -1,7 +1,15 @@
 import pandas as pd
 import json
+import numpy as np
+from pathlib import Path
 
-file_path = '/Users/sammyeisenberg/Desktop/University/Masters/CE263/Final Project/OptimalChargerPlacement/data/'
+print('='*10 + 'Start block group file' + '='*10)
+
+# -------------------------------------------------------------------
+# Define the base data directory (relative to this script's location)
+# -------------------------------------------------------------------
+DATA_DIR = Path.cwd() / "data"
+file_path = DATA_DIR / "ev_load_curves.csv"
 
 DELTA_T = 0.25
 
@@ -9,7 +17,7 @@ def load_ev_load_curves() -> pd.DataFrame:
     """Read the main output file that contains the EV load curves
     for each location and each charger type"""
     df = pd.read_csv(
-        file_path + "ev_load_curves.csv",
+        file_path,
         dtype={"load_curve": str},
     )
 
@@ -45,4 +53,5 @@ def load_ev_load_curves() -> pd.DataFrame:
     return df
 
 df = load_ev_load_curves()
-print(df.head())
+
+print('='*10 + 'Finish block group file' + '='*10)
