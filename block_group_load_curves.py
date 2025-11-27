@@ -54,4 +54,6 @@ def load_ev_load_curves() -> pd.DataFrame:
 
 df = load_ev_load_curves()
 
+df.to_parquet(DATA_DIR / 'network_analysis/df.parquet')
+
 print('='*10 + 'Finish block group file' + '='*10)

@@ -8,8 +8,8 @@ from pathlib import Path
 print('='*10 + 'Start location file' + '='*10)
 print('(Takes ~30s to run)')
 
-DATA_DIR = Path.cwd() / "data" / "geographyFiles" 
-file_path = DATA_DIR / "location_str_to_geoid_mapping.shp"
+DATA_DIR = Path.cwd() / "data" 
+file_path = DATA_DIR / "geographyFiles/location_str_to_geoid_mapping.shp"
 
 pd.set_option('display.max_colwidth', None)
 
@@ -43,5 +43,10 @@ gdf_subset = gdf[['GEOID_STR', 'INTPTLAT', 'INTPTLON', 'NEIGHBOURS']]
 
 # Match block group load curve name convention for df merge
 gdf_subset = gdf_subset.rename(columns={'GEOID_STR': 'geoid_str_'})
+
+gdf.to_parquet(DATA_DIR / 'network_analysis/gdf.parquet')
+gdf_subset.to_parquet(DATA_DIR / 'network_analysis/gdf_subset.parquet')
+gdf = gdf.drop(columns=['NEIGHBOURS'])
+gdf.to_file(DATA_DIR / 'network_analysis/gdf.geojson', driver='GeoJSON')
 
 print('='*10 + 'Finish location file' + '='*10)

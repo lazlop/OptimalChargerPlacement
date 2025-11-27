@@ -4,8 +4,8 @@ import geopandas as gpd
 from shapely.geometry import Point
 from pathlib import Path
 
-DATA_DIR = Path.cwd() / "data" / "public_charger_data" 
-file_path = DATA_DIR / "alt_fuel_stations.csv"
+DATA_DIR = Path.cwd() / "data"  
+file_path = DATA_DIR / "public_charger_data/alt_fuel_stations.csv"
 
 def load_charger_data() -> pd.DataFrame:
 
@@ -23,5 +23,11 @@ charger_gdf = gpd.GeoDataFrame(
     charger_df, 
     geometry=gpd.points_from_xy(charger_df.Longitude, charger_df.Latitude)
 )
-print(charger_gdf.head())
-anything = 0
+
+charger_df.to_parquet(DATA_DIR / 'network_analysis/charger_df.parquet')
+charger_gdf.to_parquet(DATA_DIR / 'network_analysis/charger_gdf.parquet')
+
+# print(charger_gdf.head())
+# print(len(charger_df))
+# print(len(charger_gdf))
+# print(charger_df.head())
