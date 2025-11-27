@@ -25,6 +25,9 @@ charger_gdf = gpd.read_parquet(DATA_DIR / 'network_analysis/charger_gdf.parquet'
 gdf = gpd.read_parquet(DATA_DIR / 'network_analysis/gdf.parquet')
 gdf_for_json = gpd.read_file(DATA_DIR / 'network_analysis/gdf.geojson')
 
+with open((DATA_DIR / 'Geography_Files/location_str_to_geoid_mapping.json'), 'r') as f:
+    mapping = json.load(f)
+
 # Flatten column MultiIndex
 df.columns = [
     '_'.join(col).strip() if isinstance(col, tuple) else col
@@ -132,6 +135,11 @@ col_idx = index[network_df['NEIGHBOURS']].values
 
 # Extract distances
 network_df['distance_km'] = dist_matrix[row_idx, col_idx]
+
+# Adding location str mapping ids 
+network_df['geoid'] = network_df['geoid_str_'].map(mapping)
+
+network_df.to_parquet(DATA_DIR / 'network_analysis/network_df.parquet')
 
 # =============================================
 # End origin-destination analysis

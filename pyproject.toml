@@ -8,9 +8,13 @@ dependencies = [
     "fastparquet>=2024.11.0",
     "folium>=0.20.0",
     "geopandas>=1.1.1",
+    "ipykernel>=7.1.0",
     "matplotlib>=3.10.5",
     "numpy>=2.2.6",
     "pandas>=2.3.2",
+    "plotly>=6.5.0",
     "pyarrow>=21.0.0",
     "scikit-learn>=1.7.2",
+    "seaborn>=0.13.2",
+    "shapely>=2.1.1",
 ]
