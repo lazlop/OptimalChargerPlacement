@@ -220,3 +220,4 @@ data/**/*
 # ...but keep the directories themselves
 !data/**/
 !data/**/.gitkeep
+.DS_Store
