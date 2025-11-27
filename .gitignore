@@ -222,3 +222,4 @@ data/**/*
 !data/**/.gitkeep
 .DS_Store
 uv.lock
+optimization-formulation.md
