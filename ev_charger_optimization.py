@@ -88,6 +88,11 @@ class EVChargerOptimization:
         ))
         
         print(f"Total feeders: {len(self.feeders)}")
+
+        print('FOR DEBUGGING, setting any negative feeder capacity to 0 and reducing headroom by 50%')
+        for feeder_id in self.feeder_capacity:
+            if self.feeder_capacity[feeder_id] < 0:
+                self.feeder_capacity[feeder_id] = 0
         
         # Create feeder-node mapping from matrix
         # The matrix has feeders as rows and GEOIDs as columns
@@ -102,6 +107,8 @@ class EVChargerOptimization:
                     self.feeder_node_proportion[feeder_id][geoid] = proportion
                     nodes_represented.add(geoid)
         
+
+
         # REMOVE unrepresented nodes and edges
         nodes_removed = 0
         edges_removed = 0
@@ -124,7 +131,7 @@ class EVChargerOptimization:
     def build_model(self, 
                    max_upgrades=10000,
                    feeder_upgrade_cost=10000,
-                   charger_capacity_cost=100,
+                   charger_capacity_cost=0,
                    displacement_cost_multiplier=1.0,
                    auto_upgrade_overloaded_feeders=True,
                    maximum_node_capacity=10000,
@@ -194,11 +201,7 @@ class EVChargerOptimization:
                                        lowBound=0, 
                                        cat='Continuous')
         
-        # n[i] = binary variable indicating if node i is upgraded
-        self.n = LpVariable.dicts("node_upgraded", 
-                                  self.nodes, 
-                                  cat='Binary')
-        
+        # # n[i] = binary variable indicating if node i is upgradedx
         # f[k] = binary variable indicating if feeder k is upgraded
         self.f = LpVariable.dicts("feeder_upgraded",
                                   self.feeders,
@@ -268,33 +271,28 @@ class EVChargerOptimization:
                 )
         
         # 3. Installation Constraints
-        # Nodes can be upgraded to a certain maximum capacity, (can maybe consider whether the upgrades happen with feeder upgrades)
+        # Nodes can be upgraded to their 
+        # get amount of node upgrades. Nodes can be upgraded up to maximum capacity. 
+        # NOTE: Upgraded nodes may not map exactly to upgraded feeders, since there is some available capacity without feeder upgrades. Would be good to see if this is done anywhere.
         # for i in self.nodes:
         #     self.model += (
         #         self.x[i] <= maximum_node_capacity * self.n[i],
         #         f"Upgrade_Required_{i}"
         #     )
-        
-        # TODO: Reconsider how the node upgrade constraint works
-        # get amount of node upgrades
-        for i in self.nodes:
-            self.model += (
-                self.x[i] <= maximum_node_capacity * self.n[i],
-                f"Upgrade_Required_{i}"
-            )
 
-        # Maximum number of node upgrades
-        self.model += (
-            lpSum([self.n[i] for i in self.nodes]) <= max_upgrades,
-            "Max_Upgrades"
-        )
+        # # Maximum number of node upgrades
+        # self.model += (
+        #     lpSum([self.n[i] for i in self.nodes]) <= max_upgrades,
+        #     "Max_Upgrades"
+        # )
         
-        # 4. Force upgrade of already-overloaded feeders
-        for k in self.must_upgrade_feeders:
-            self.model += (
-                self.f[k] == 1,
-                f"Force_Upgrade_Feeder_{k}"
-            )
+        # 4. Force upgrade of already-overloaded feeders, necessary for optimization since we assume result is no overloaded feeders.
+        # Can just add slack variable to feeder capacity too. 
+        # for k in self.must_upgrade_feeders:
+        #     self.model += (
+        #         self.f[k] == 1,
+        #         f"Force_Upgrade_Feeder_{k}"
+        #     )
         
         print(f"Model built with {len(self.model.variables())} variables and {len(self.model.constraints)} constraints")
         
@@ -340,11 +338,13 @@ class EVChargerOptimization:
             return None
         
         print("\nExtracting results...")
-        
+
         # Node upgrades and capacity additions
         node_results = []
         for i in self.nodes:
-            if value(self.n[i]) > 0.5:  # Binary variable is 1
+            # if value(self.n[i]) > 0.5:  # Binary variable is 1
+            # if not using self.n[i]
+            if value(self.x[i]) > 0.5:
                 capacity = value(self.x[i])
                 if capacity > 0:
                     node_results.append({
@@ -485,12 +485,8 @@ def main():
     # Prepare data
     opt.prepare_data()
     
-    # Build model with parameters
-    opt.build_model(
-        feeder_upgrade_cost=10000,  # Cost per feeder upgrade
-        charger_capacity_cost=100,  # Cost per kW of capacity
-        displacement_cost_multiplier=50  # Multiplier for displacement costs
-    )
+    # Build model 
+    opt.build_model(feeder_upgrade_cost=100000)
     
     # Solve
     success = opt.solve(time_limit=60, gap=0.05)
