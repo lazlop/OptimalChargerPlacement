@@ -138,6 +138,7 @@ network_df['distance_km'] = dist_matrix[row_idx, col_idx]
 
 # Adding location str mapping ids 
 network_df['geoid'] = network_df['geoid_str_'].map(mapping)
+network_df['neighbor_geoid'] = network_df['NEIGHBOURS'].map(mapping)
 
 network_df.to_parquet(DATA_DIR / 'network_analysis/network_df.parquet')
 
