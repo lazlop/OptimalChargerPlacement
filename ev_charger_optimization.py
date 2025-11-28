@@ -1,25 +1,19 @@
-"""
-EV Charger Placement Optimization
-
-Implements Mixed Integer Linear Programming (MILP) to optimally place
-EV chargers while minimizing grid upgrade costs and customer inconvenience costs for displacing demand.
-"""
-
 import pandas as pd
 import numpy as np
-from pulp import *
+from pyomo.environ import *
 import warnings
+from pathlib import Path
 warnings.filterwarnings('ignore')
-
 
 class EVChargerOptimization:
     """
-    Optimization model for EV charger placement
+    Optimization model for EV charger placement using Pyomo
     """
     def __init__(self, 
-                 network_df_path='data/network_analysis/network_df.parquet',
-                 grid_constraint_df_path='data/network_analysis/example_grid_constraint_df.parquet',
-                 feeder_block_matrix_path='data/network_analysis/feeder_block_matrix.parquet'):
+                 base_dir = 'data/network_analysis',
+                 network_df_path='network_df.parquet',
+                 grid_constraint_df_path='example_grid_constraint_df.parquet',
+                 feeder_block_matrix_path='feeder_block_matrix.parquet'):
         """
         Initialize the optimization model with data files.
         
@@ -33,9 +27,9 @@ class EVChargerOptimization:
             Path to feeder-block mapping matrix
         """
         print("Loading data files...")
-        self.network_df = pd.read_parquet(network_df_path)
-        self.grid_df = pd.read_parquet(grid_constraint_df_path)
-        self.feeder_block_df = pd.read_parquet(feeder_block_matrix_path)
+        self.network_df = pd.read_parquet(Path(base_dir) / network_df_path)
+        self.grid_df = pd.read_parquet(Path(base_dir) / grid_constraint_df_path)
+        self.feeder_block_df = pd.read_parquet(Path(base_dir) / feeder_block_matrix_path)
         
         print(f"Network edges: {len(self.network_df)}")
         print(f"Grid feeders: {len(self.grid_df)}")
@@ -53,51 +47,28 @@ class EVChargerOptimization:
         """
         print("\nPreparing data...")
         
-        # Extract unique nodes from network
         origin_nodes = self.network_df['geoid'].unique()
         dest_nodes = self.network_df['neighbor_geoid'].unique()
         self.nodes = list(set(origin_nodes) | set(dest_nodes))
         print(f"Total nodes (census block groups): {len(self.nodes)}")
         
-        # Create node demand dictionary
-        self.node_demand = {}
-        for node in self.nodes:
-            # Get demand from origin_demand column
-            demand_rows = self.network_df[self.network_df['geoid'] == node]
-            if len(demand_rows) > 0:
-                self.node_demand[node] = demand_rows['origin_demand_(kW)'].iloc[0]
-            else:
-                self.node_demand[node] = 0.0
+        self.node_demand = {node: self.network_df[self.network_df['geoid'] == node]['origin_demand_(kW)'].iloc[0] 
+                             if len(self.network_df[self.network_df['geoid'] == node]) > 0 else 0.0 
+                             for node in self.nodes}
         
-        # Create edges list with costs
-        self.edges = []
-        for idx, row in self.network_df.iterrows():
-            origin = row['geoid']
-            neighbor = row['neighbor_geoid']
-            # Cost is based on distance (could be weighted differently)
-            cost = row['distance_km']
-            self.edges.append((origin, neighbor, cost))
-        
+        self.edges = [(row['geoid'], row['neighbor_geoid'], row['distance_km']) for idx, row in self.network_df.iterrows()]
         print(f"Total edges: {len(self.edges)}")
-        
-        # Prepare feeder data
+
         self.feeders = list(self.grid_df['feeder_id'].values)
-        self.feeder_capacity = dict(zip(
-            self.grid_df['feeder_id'], 
-            self.grid_df['available_capacity']
-        ))
+        self.feeder_capacity = dict(zip(self.grid_df['feeder_id'], self.grid_df['available_capacity']))
         
         print(f"Total feeders: {len(self.feeders)}")
-
-        print('FOR DEBUGGING, setting any negative feeder capacity to 0 and reducing headroom by 50%')
-        for feeder_id in self.feeder_capacity:
-            if self.feeder_capacity[feeder_id] < 0:
-                self.feeder_capacity[feeder_id] = 0
-            else:
-                self.feeder_capacity[feeder_id] *= 0
         
-        # Create feeder-node mapping from matrix
-        # The matrix has feeders as rows and GEOIDs as columns
+        # Modify negative capacities to zero and apply adjustments as needed
+        for feeder_id in self.feeder_capacity:
+            self.feeder_capacity[feeder_id] = max(0, self.feeder_capacity[feeder_id])
+
+        # Create feeder-node proportion mapping
         self.feeder_node_proportion = {}
         nodes_represented = set()
         for feeder_id in self.feeder_block_df.index:
@@ -108,28 +79,15 @@ class EVChargerOptimization:
                         self.feeder_node_proportion[feeder_id] = {}
                     self.feeder_node_proportion[feeder_id][geoid] = proportion
                     nodes_represented.add(geoid)
-        
 
-
-        # REMOVE unrepresented nodes and edges
-        nodes_removed = 0
-        edges_removed = 0
-        for geoid in self.nodes:
-            if geoid not in nodes_represented:
-                nodes_removed += 1
-                self.nodes.remove(geoid)
-                del self.node_demand[geoid]
-                for edge in self.edges:
-                    if edge[0] == geoid or edge[1] == geoid:
-                        self.edges.remove(edge)
-                        edges_removed += 1
+        # Remove unrepresented nodes and edges
+        self.nodes = [geoid for geoid in self.nodes if geoid in nodes_represented]
+        self.node_demand = {k: v for k, v in self.node_demand.items() if k in self.nodes}
+        self.edges = [(i, j, c) for (i, j, c) in self.edges if i in self.nodes and j in self.nodes]
         
         print(f"Nodes not mapped to feeders: {len(set(self.nodes) - nodes_represented)} of {len(self.nodes)}")
         print(f"Feeder-node mappings created: {len(self.feeder_node_proportion)}")
-        print(f"Removed nodes: {len(nodes_represented)}")
-        print(f"Removed edges: {edges_removed}")
 
-        
     def build_model(self, 
                    max_upgrades=10000,
                    feeder_upgrade_cost=10000,
@@ -139,305 +97,159 @@ class EVChargerOptimization:
                    maximum_node_capacity=10000,
                    maximum_upgrade_capacity=1e6):
         """
-        Build the MILP optimization model.
-        
-        Parameters:
-        -----------
-        max_upgrades : int
-            Maximum number of nodes that can be upgraded, default is 10000 (so this constraint is essentially never active)
-        feeder_upgrade_cost : float
-            Fixed cost for upgrading a feeder, used to tune optimization problem to avoid upgrading feeders 
-        charger_capacity_cost : float
-            Cost per kW of additional charger capacity, used to tune optimization problem
-        displacement_cost_multiplier : float
-            Multiplier for demand displacement costs, used to tune optimization problem to displace less demand
-        auto_upgrade_overloaded_feeders : bool
-            If True, automatically upgrade feeders that are already overloaded (without EVs present)
-        maximum_node_capacity: float
-            Maximum capacity of a node, default 10000
-        maximum_upgrade_capacity: float
-            Maximum amount of a feeder upgrade, default 1e6
+        Build the optimization model using Pyomo.
         """
         print("\nBuilding optimization model...")
         
-        # Identify feeders that are already overloaded (must be upgraded or handled some other way before optimization)
-        self.must_upgrade_feeders = set()
-        if auto_upgrade_overloaded_feeders:
-            print("Checking for overloaded feeders...")
-            for k in self.feeders:
-                # Check if feeder has nodes mapped to it
-                if k in self.feeder_node_proportion:
-                    current_load = 0
-                    for node, proportion in self.feeder_node_proportion[k].items():
-                        if node in self.nodes:
-                            current_load += proportion * self.node_demand.get(node, 0)
-                    
-                    capacity = self.feeder_capacity.get(k, 0)
-                    if current_load > capacity:
-                        self.must_upgrade_feeders.add(k)
-                        print(f"  Feeder {k}: load={current_load:.1f} kW > capacity={capacity:.1f} kW")
-                # Also check if feeder has negative capacity
-                elif self.feeder_capacity.get(k, 0) < 0:
-                    self.must_upgrade_feeders.add(k)
-                    print(f"  Feeder {k}: negative capacity={self.feeder_capacity.get(k, 0):.1f} kW")
-            
-            if len(self.must_upgrade_feeders) > 0:
-                print(f"Auto-upgrading {len(self.must_upgrade_feeders)} feeders that are already overloaded")
-            else:
-                print("No overloaded feeders found")
+        # Initialize Pyomo model
+        self.model = ConcreteModel()
         
-        # Create the model
-        self.model = LpProblem("EV_Charger_Placement", LpMinimize)
-        
+        # Set indices for nodes, edges, and feeders
+        self.model.N = Set(initialize=self.nodes)
+        self.model.E = Set(initialize=[(i, j) for (i, j, _) in self.edges])
+        self.model.F = Set(initialize=self.feeders)
+
         # Decision Variables
-        # x[i] = additional charger capacity (kW) placed in node i
-        self.x = LpVariable.dicts("charger_capacity", 
-                                  self.nodes, 
-                                  lowBound=0, 
-                                  cat='Continuous')
-        
-        # y[i,j] = demand moved from node i to node j
-        self.y = {}
-        for (i, j, cost) in self.edges:
-            self.y[(i, j)] = LpVariable(f"demand_flow_{i}_{j}", 
-                                       lowBound=0, 
-                                       cat='Continuous')
-        
-        # # n[i] = binary variable indicating if node i is upgradedx
-        # f[k] = binary variable indicating if feeder k is upgraded
-        self.f = LpVariable.dicts("feeder_upgraded",
-                                  self.feeders,
-                                  cat='Binary')
-        
+        self.model.charger_capacity = Var(self.model.N, within=NonNegativeReals)
+        self.model.demand_flow = Var(self.model.E, within=NonNegativeReals)
+        self.model.feeder_upgraded = Var(self.model.F, within=Binary)
+
         # Objective Function
-        # Minimize: feeder upgrade costs + charger capacity costs + displacement costs
-        objective = 0
-        
-        # Feeder upgrade costs
-        for k in self.feeders:
-            objective += feeder_upgrade_cost * self.f[k]
-        
-        # Charger capacity costs
-        for i in self.nodes:
-            objective += charger_capacity_cost * self.x[i]
-        
-        # Demand displacement costs
-        for (i, j, cost) in self.edges:
-            objective += displacement_cost_multiplier * cost * self.y[(i, j)]
-        
-        self.model += objective, "Total_Cost"
-        
+        self.model.cost = Objective(expr=sum(feeder_upgrade_cost * self.model.feeder_upgraded[f] for f in self.model.F) +
+                                     sum(charger_capacity_cost * self.model.charger_capacity[n] for n in self.model.N) +
+                                     sum(displacement_cost_multiplier * cost * self.model.demand_flow[i, j] for (i, j, cost) in self.edges), 
+                                     sense=minimize)
+
         # Constraints
-        
-        # 1a. EV Conservation of Demand
-        # The demand removed from the node must not exceed the original demand (or the original demand plus the demand moved in, if we would prefer it that way)
-        # NOTE: I feel like we're missing an element of human behavior. We may be trying to shift one group to its adjacent node and another group to that node - would be good to find these wrinkles in analysis afterwoards. 
-        for i in self.nodes:
-            demand_in = lpSum([self.y[(j, i)] for (j, k, _) in self.edges if k == i])
-            demand_out = lpSum([self.y[(i, j)] for (orig, j, _) in self.edges if orig == i])
-            
-            self.model += (
-                self.node_demand.get(i, 0) >= demand_out,
-                f"Demand_Balance_{i}"
-            )
+        # Demand balance for each node
+        self.model.demand_balance = ConstraintList()
+        for n in self.model.N:
+            self.model.demand_balance.add(sum(self.model.demand_flow[j, n] for (j, _) in self.model.E if (j, n) in self.model.E) - 
+                                            sum(self.model.demand_flow[n, j] for (_, j) in self.model.E if (n, j) in self.model.E) <= self.node_demand[n])
 
-        # 1b. EV Charger capacity sufficiency
-        # For each node: charger capacity >= demand flowing in - demand flowing out + original demand
-        for i in self.nodes:
-            demand_in = lpSum([self.y[(j, i)] for (j, k, _) in self.edges if k == i])
-            demand_out = lpSum([self.y[(i, j)] for (orig, j, _) in self.edges if orig == i])
-            
-            self.model += (
-                self.x[i] >= self.node_demand.get(i, 0) + demand_in - demand_out,
-                f"Charger_Sufficiency_{i}"
-            )
-        
-        # 2. Feeder Capacity Constraint
-        # For each feeder, the total load from its nodes must not exceed capacity
-        # Load at a node = original demand + charger capacity installed at that node
-        for k in self.feeders:
-            if k in self.feeder_node_proportion:
-                feeder_load = 0
-                for node, proportion in self.feeder_node_proportion[k].items():
-                    if node in self.nodes:
-                        # Load at node = original demand + new charger capacity 
-                        # TODO: (need to decide how to do demand flow in and out with this, may just add decision var)
-                        node_load = self.node_demand.get(node, 0) + self.x[node]
-                        feeder_load += proportion * node_load
-                
-                # Capacity constraint with upgrade option
-                # If feeder is upgraded (f[k]=1), we assume it can be upgraded by some amount (currently set very large)
-                self.model += (
-                    feeder_load <= self.feeder_capacity.get(k, 0) + maximum_upgrade_capacity * self.f[k],
-                    f"Feeder_Capacity_{k}"
-                )
-        
-        # 3. Installation Constraints
-        # Nodes can be upgraded to their 
-        # get amount of node upgrades. Nodes can be upgraded up to maximum capacity. 
-        # NOTE: Upgraded nodes may not map exactly to upgraded feeders, since there is some available capacity without feeder upgrades. Would be good to see if this is done anywhere.
-        # for i in self.nodes:
-        #     self.model += (
-        #         self.x[i] <= maximum_node_capacity * self.n[i],
-        #         f"Upgrade_Required_{i}"
-        #     )
+        # Charger capacity sufficiency
+        self.model.charger_sufficiency = ConstraintList()
+        for n in self.model.N:
+            self.model.charger_sufficiency.add(self.model.charger_capacity[n] >= self.node_demand[n] + 
+                                                sum(self.model.demand_flow[j, n] for (j, _) in self.model.E if (j, n) in self.model.E) - 
+                                                sum(self.model.demand_flow[n, j] for (_, j) in self.model.E if (n, j) in self.model.E))
 
-        # # Maximum number of node upgrades
-        # self.model += (
-        #     lpSum([self.n[i] for i in self.nodes]) <= max_upgrades,
-        #     "Max_Upgrades"
-        # )
-        
-        # 4. Force upgrade of already-overloaded feeders, necessary for optimization since we assume result is no overloaded feeders.
-        # Can just add slack variable to feeder capacity too. 
-        # for k in self.must_upgrade_feeders:
-        #     self.model += (
-        #         self.f[k] == 1,
-        #         f"Force_Upgrade_Feeder_{k}"
-        #     )
-        
-        print(f"Model built with {len(self.model.variables())} variables and {len(self.model.constraints)} constraints")
-        
+        # Feeder capacity constraint
+        self.model.feeder_capacity = ConstraintList()
+        for f in self.model.F:
+            if f in self.feeder_node_proportion:
+                load_expr = sum(self.feeder_node_proportion[f].get(n, 0) * (self.node_demand[n] + self.model.charger_capacity[n]) for n in self.model.N)
+                self.model.feeder_capacity.add(load_expr <= self.feeder_capacity.get(f, 0) + maximum_upgrade_capacity * self.model.feeder_upgraded[f])
+
+        print(f"Model built with {len(list(self.model.component_objects(Var)))} variables and {len(list(self.model.component_objects(Constraint)))} constraints")
+
     def solve(self, time_limit=300, gap=0.01):
         """
         Solve the optimization model.
-        
-        Parameters:
-        -----------
-        time_limit : int
-            Maximum time in seconds for solver
-        gap : float
-            MIP gap tolerance (0.01 = 1%)
         """
         print(f"\nSolving optimization model...")
-        print(f"Time limit: {time_limit}s, MIP gap: {gap*100}%")
         
-        # Solve with CBC solver (default in PuLP)
-        solver = PULP_CBC_CMD(timeLimit=time_limit, gapRel=gap, msg=1)
-        self.model.solve(solver)
+        solver = SolverFactory('cbc')
+        solver.options['timeLimit'] = time_limit
+        solver.options['mipgap'] = gap
         
-        # Check solution status
-        status = LpStatus[self.model.status]
-        print(f"\nSolution Status: {status}")
+        results = solver.solve(self.model, tee=True)
+        print(f"\nSolution Status: {results.solver.status}, {results.solver.termination_condition}")
         
-        if self.model.status == LpStatusOptimal or self.model.status == LpStatusNotSolved:
-            print(f"Objective Value: ${value(self.model.objective):,.2f}")
+        self.results = results
+        if results.solver.termination_condition == TerminationCondition.optimal or results.solver.termination_condition == TerminationCondition.feasible:
+            print(f"Objective Value: ${self.model.cost()}")
             return True
         else:
             print("No feasible solution found!")
             return False
-    
+
     def get_results(self):
         """
         Extract and format optimization results.
-        
-        Returns:
-        --------
-        dict : Dictionary containing results dataframes
         """
-        if self.model is None or self.model.status not in [LpStatusOptimal, LpStatusNotSolved]:
+        if self.model is None or self.results.solver.termination_condition not in [TerminationCondition.optimal, TerminationCondition.feasible]:
             print("No solution available!")
             return None
         
         print("\nExtracting results...")
 
-        # Node upgrades and capacity additions
         node_results = []
-        for i in self.nodes:
-            # if value(self.n[i]) > 0.5:  # Binary variable is 1
-            # if not using self.n[i]
-            if value(self.x[i]) > 0.5:
-                capacity = value(self.x[i])
-                if capacity > 0:
-                    node_results.append({
-                        'node': i,
-                        'additional_capacity_kW': capacity,
-                        'original_demand_kW': self.node_demand.get(i, 0),
-                        'upgraded': True
-                    })
+        for n in self.model.N:
+            capacity = value(self.model.charger_capacity[n])
+            if capacity > 0:
+                node_results.append({
+                    'node': n,
+                    'additional_capacity_kW': capacity,
+                    'original_demand_kW': self.node_demand[n],
+                    'upgraded': True
+                })
         
         node_df = pd.DataFrame(node_results)
-        if len(node_df) > 0:
-            node_df = node_df.sort_values('additional_capacity_kW', ascending=False)
-        
-        # Feeder upgrades
+
         feeder_results = []
-        for k in self.feeders:
-            if value(self.f[k]) > 0.5:  # Binary variable is 1
+        for f in self.model.F:
+            if value(self.model.feeder_upgraded[f]) > 0.5:
                 feeder_results.append({
-                    'feeder_id': k,
-                    'original_capacity': self.feeder_capacity.get(k, 0),
+                    'feeder_id': f,
+                    'original_capacity': self.feeder_capacity[f],
                     'upgraded': True
                 })
         
         feeder_df = pd.DataFrame(feeder_results)
-        
-        # Demand flows
+
         flow_results = []
-        for (i, j, cost) in self.edges:
-            flow = value(self.y[(i, j)])
-            if flow > 0.01:  # Only significant flows
+        for (i, j) in self.model.E:
+            flow = value(self.model.demand_flow[i, j])
+            if flow > 0.01:
+                distance = next(cost for (x, y, cost) in self.edges if x == i and y == j)
                 flow_results.append({
                     'from_node': i,
                     'to_node': j,
                     'flow_kW': flow,
-                    'distance_km': cost,
-                    'cost': cost * flow
+                    'distance_km': distance,
+                    'cost': distance * flow
                 })
         
         flow_df = pd.DataFrame(flow_results)
-        if len(flow_df) > 0:
-            flow_df = flow_df.sort_values('flow_kW', ascending=False)
-        
-        # Summary statistics
+
         summary = {
-            'total_cost': value(self.model.objective),
+            'total_cost': value(self.model.cost),
             'nodes_upgraded': len(node_df),
             'feeders_upgraded': len(feeder_df),
             'total_additional_capacity_kW': node_df['additional_capacity_kW'].sum() if len(node_df) > 0 else 0,
             'total_demand_displaced_kW': flow_df['flow_kW'].sum() if len(flow_df) > 0 else 0,
             'avg_displacement_distance_km': (flow_df['distance_km'] * flow_df['flow_kW']).sum() / flow_df['flow_kW'].sum() if len(flow_df) > 0 and flow_df['flow_kW'].sum() > 0 else 0
         }
-        
+
         return {
             'nodes': node_df,
             'feeders': feeder_df,
             'flows': flow_df,
             'summary': summary
         }
-    
+
     def save_results(self, results, output_prefix='optimization_results'):
         """
         Save results to CSV files.
-        
-        Parameters:
-        -----------
-        results : dict
-            Results dictionary from get_results()
-        output_prefix : str
-            Prefix for output files
         """
         if results is None:
             return
         
         print(f"\nSaving results with prefix: {output_prefix}")
         
-        # Save node results
         if len(results['nodes']) > 0:
             results['nodes'].to_csv(f'{output_prefix}_nodes.csv', index=False)
             print(f"Saved {len(results['nodes'])} node upgrades to {output_prefix}_nodes.csv")
         
-        # Save feeder results
         if len(results['feeders']) > 0:
             results['feeders'].to_csv(f'{output_prefix}_feeders.csv', index=False)
             print(f"Saved {len(results['feeders'])} feeder upgrades to {output_prefix}_feeders.csv")
         
-        # Save flow results
         if len(results['flows']) > 0:
             results['flows'].to_csv(f'{output_prefix}_flows.csv', index=False)
             print(f"Saved {len(results['flows'])} demand flows to {output_prefix}_flows.csv")
         
-        # Save summary
         summary_df = pd.DataFrame([results['summary']])
         summary_df.to_csv(f'{output_prefix}_summary.csv', index=False)
         print(f"Saved summary to {output_prefix}_summary.csv")
@@ -445,11 +257,6 @@ class EVChargerOptimization:
     def print_summary(self, results):
         """
         Print a summary of the optimization results.
-        
-        Parameters:
-        -----------
-        results : dict
-            Results dictionary from get_results()
         """
         if results is None:
             return
@@ -475,7 +282,6 @@ class EVChargerOptimization:
             print(results['flows'].head()[['from_node', 'to_node', 'flow_kW', 'distance_km']])
         
         print("\n" + "="*80)
-
 
 def main():
     """
@@ -506,7 +312,6 @@ def main():
         return results
     
     return None
-
 
 if __name__ == "__main__":
     results = main()
