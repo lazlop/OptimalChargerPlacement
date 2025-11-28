@@ -3,6 +3,8 @@ import numpy as np
 from pyomo.environ import *
 import warnings
 from pathlib import Path
+
+from random import sample, random
 warnings.filterwarnings('ignore')
 
 class EVChargerOptimization:
@@ -95,8 +97,9 @@ class EVChargerOptimization:
             feeder_demand = 0
             feeder_capacity = self.feeder_capacity[feeder]
             for k, v in proportion.items():
+                print("For DEBUGGING: reassigning feeder node proportions, since they don't line up")
                 if k not in self.node_demand.keys():
-                    continue
+                    k = sample(list(self.node_demand.keys()), 1)[0]
                 feeder_demand += self.node_demand[k] * v
 
             if feeder_demand > feeder_capacity:

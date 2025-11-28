@@ -14,3 +14,5 @@ Issues
     - node demand is a 
     - feeder node proportion is also a superset of the feeder demands
     - Major issue, feeder proportionality seems to zero out most of our nodes
+
+- I may be screwing up the types of feeder_ids and dropping things incorrectly. 
