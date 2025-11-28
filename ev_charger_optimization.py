@@ -93,6 +93,8 @@ class EVChargerOptimization:
         for feeder_id in self.feeder_capacity:
             if self.feeder_capacity[feeder_id] < 0:
                 self.feeder_capacity[feeder_id] = 0
+            else:
+                self.feeder_capacity[feeder_id] *= 0
         
         # Create feeder-node mapping from matrix
         # The matrix has feeders as rows and GEOIDs as columns
