@@ -88,6 +88,22 @@ class EVChargerOptimization:
         print(f"Nodes not mapped to feeders: {len(set(self.nodes) - nodes_represented)} of {len(self.nodes)}")
         print(f"Feeder-node mappings created: {len(self.feeder_node_proportion)}")
 
+        overloaded_feeders = 0
+        for feeder, proportion in self.feeder_node_proportion.items():
+            if feeder not in self.feeder_capacity.keys():
+                continue
+            feeder_demand = 0
+            feeder_capacity = self.feeder_capacity[feeder]
+            for k, v in proportion.items():
+                if k not in self.node_demand.keys():
+                    continue
+                feeder_demand += self.node_demand[k] * v
+
+            if feeder_demand > feeder_capacity:
+                overloaded_feeders += 1
+
+        print(f"Overloaded feeders: {overloaded_feeders}")
+
     def build_model(self, 
                    max_upgrades=10000,
                    feeder_upgrade_cost=10000,
