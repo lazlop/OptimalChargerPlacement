@@ -122,6 +122,7 @@ class EVChargerOptimization:
 
         
     def build_model(self, 
+                   max_upgrades=10000,
                    feeder_upgrade_cost=10000,
                    charger_capacity_cost=100,
                    displacement_cost_multiplier=1.0,
@@ -133,6 +134,8 @@ class EVChargerOptimization:
         
         Parameters:
         -----------
+        max_upgrades : int
+            Maximum number of nodes that can be upgraded, default is 10000 (so this constraint is essentially never active)
         feeder_upgrade_cost : float
             Fixed cost for upgrading a feeder, used to tune optimization problem to avoid upgrading feeders 
         charger_capacity_cost : float
@@ -264,30 +267,20 @@ class EVChargerOptimization:
                     f"Feeder_Capacity_{k}"
                 )
         
-        # 3a. Installation Constraints
+        # 3. Installation Constraints
         # Nodes can be upgraded to a certain maximum capacity, (can maybe consider whether the upgrades happen with feeder upgrades)
         for i in self.nodes:
             self.model += (
-                self.x[i] <= maximum_node_capacity, # * self.n[i],
+                self.x[i] <= maximum_node_capacity * self.n[i],
                 f"Upgrade_Required_{i}"
             )
         
-        # # 3b. Nodes are upgraded where the feeder has been upgraded
-        # for i in self.nodes:
-        #     for k in self.feeders:
-        #         if k in self.feeder_node_proportion:
-        #             if i in self.feeder_node_proportion[k]:
-        #                 self.model += (
-        #                     self.n[i] == self.f[k],
-        #                     f"Node_Upgrade_{i}"
-        #                 )
-
-        # Maximum number of nodes can be upgraded
+        # Maximum number of node upgrades
         self.model += (
             lpSum([self.n[i] for i in self.nodes]) <= max_upgrades,
             "Max_Upgrades"
         )
-
+        
         # 4. Force upgrade of already-overloaded feeders
         for k in self.must_upgrade_feeders:
             self.model += (
@@ -311,7 +304,7 @@ class EVChargerOptimization:
         print(f"\nSolving optimization model...")
         print(f"Time limit: {time_limit}s, MIP gap: {gap*100}%")
         
-        # Solve with CBC 
+        # Solve with CBC solver (default in PuLP)
         solver = PULP_CBC_CMD(timeLimit=time_limit, gapRel=gap, msg=1)
         self.model.solve(solver)
         
