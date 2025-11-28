@@ -91,19 +91,34 @@ class EVChargerOptimization:
         print(f"Feeder-node mappings created: {len(self.feeder_node_proportion)}")
 
         overloaded_feeders = 0
+        print("For DEBUGGING: reassigning feeder node proportions and increasing contribution to 1 to make sure nodes all covered")
+        feeder_represented_nodes = set()
+        new_feeder_node_proportion = {}
         for feeder, proportion in self.feeder_node_proportion.items():
             if feeder not in self.feeder_capacity.keys():
                 continue
             feeder_demand = 0
             feeder_capacity = self.feeder_capacity[feeder]
+            new_feeder_node_proportion[feeder] = {}
             for k, v in proportion.items():
-                print("For DEBUGGING: reassigning feeder node proportions, since they don't line up")
                 if k not in self.node_demand.keys():
                     k = sample(list(self.node_demand.keys()), 1)[0]
+                new_feeder_node_proportion[feeder][k] = 1
+                feeder_represented_nodes.add(k)
                 feeder_demand += self.node_demand[k] * v
 
             if feeder_demand > feeder_capacity:
                 overloaded_feeders += 1
+
+        self.feeder_node_proportion = new_feeder_node_proportion
+        
+        print("For DEBUGGING: making sure every node is assigned to a feeder")
+        # need to make sure every node is assigned to a feeder. 
+        unrepresented_nodes = set(self.node_demand.keys()) - feeder_represented_nodes
+        print('adding ', len(unrepresented_nodes), 'to feeders')
+        for node in unrepresented_nodes:
+            random_feeder = sample(list(self.feeder_node_proportion.keys()), 1)[0]
+            self.feeder_node_proportion[random_feeder][node] = 1
 
         print(f"Overloaded feeders: {overloaded_feeders}")
 
@@ -141,12 +156,16 @@ class EVChargerOptimization:
 
         # Constraints
         # Demand balance for each node
+        # Amount of flow into the node, minus the amount of flow out of the node, must equal the node demand
+        # OR amount of flow out of the node can't exceed the original amount in the node
         self.model.demand_balance = ConstraintList()
         for n in self.model.N:
-            self.model.demand_balance.add(sum(self.model.demand_flow[j, n] for (j, _) in self.model.E if (j, n) in self.model.E) - 
-                                            sum(self.model.demand_flow[n, j] for (_, j) in self.model.E if (n, j) in self.model.E) <= self.node_demand[n])
+            # self.model.demand_balance.add(sum(self.model.demand_flow[j, n] for (j, _) in self.model.E if (j, n) in self.model.E) - 
+            #                                 sum(self.model.demand_flow[n, j] for (_, j) in self.model.E if (n, j) in self.model.E) <= self.node_demand[n])
+            self.model.demand_balance.add(sum(self.model.demand_flow[j, n] for (j, _) in self.model.E if (j, n) in self.model.E) <= self.node_demand[n])
 
         # Charger capacity sufficiency
+        # The chargers must provide enough capacity to satisfy the demand
         self.model.charger_sufficiency = ConstraintList()
         for n in self.model.N:
             self.model.charger_sufficiency.add(self.model.charger_capacity[n] >= self.node_demand[n] + 
@@ -154,13 +173,12 @@ class EVChargerOptimization:
                                                 sum(self.model.demand_flow[n, j] for (_, j) in self.model.E if (n, j) in self.model.E))
 
         # Feeder capacity constraint
+        # The feeders must have enough capacity to satisfy the existing demand and newly installed charger capacity
         self.model.feeder_capacity = ConstraintList()
         for f in self.model.F:
             if f in self.feeder_node_proportion:
                 load_expr = sum(self.feeder_node_proportion[f].get(n, 0) * (self.node_demand[n] + self.model.charger_capacity[n]) for n in self.model.N)
                 self.model.feeder_capacity.add(load_expr <= self.feeder_capacity.get(f, 0) + maximum_upgrade_capacity * self.model.feeder_upgraded[f])
-
-        print(f"Model built with {len(list(self.model.component_objects(Var)))} variables and {len(list(self.model.component_objects(Constraint)))} constraints")
 
     def solve(self, time_limit=300, gap=0.01):
         """
