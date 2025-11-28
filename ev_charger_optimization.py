@@ -255,8 +255,8 @@ class EVChargerOptimization:
                 feeder_load = 0
                 for node, proportion in self.feeder_node_proportion[k].items():
                     if node in self.nodes:
-                        # Load at node = original demand + new charger capacity
-                        # (demand flows don't affect grid load, only where charging happens)
+                        # Load at node = original demand + new charger capacity 
+                        # TODO: (need to decide how to do demand flow in and out with this, may just add decision var)
                         node_load = self.node_demand.get(node, 0) + self.x[node]
                         feeder_load += proportion * node_load
                 
@@ -269,12 +269,20 @@ class EVChargerOptimization:
         
         # 3. Installation Constraints
         # Nodes can be upgraded to a certain maximum capacity, (can maybe consider whether the upgrades happen with feeder upgrades)
+        # for i in self.nodes:
+        #     self.model += (
+        #         self.x[i] <= maximum_node_capacity * self.n[i],
+        #         f"Upgrade_Required_{i}"
+        #     )
+        
+        # TODO: Reconsider how the node upgrade constraint works
+        # get amount of node upgrades
         for i in self.nodes:
             self.model += (
                 self.x[i] <= maximum_node_capacity * self.n[i],
                 f"Upgrade_Required_{i}"
             )
-        
+
         # Maximum number of node upgrades
         self.model += (
             lpSum([self.n[i] for i in self.nodes]) <= max_upgrades,
@@ -485,7 +493,7 @@ def main():
     )
     
     # Solve
-    success = opt.solve(time_limit=300, gap=0.05)
+    success = opt.solve(time_limit=60, gap=0.05)
     
     if success:
         # Get results
