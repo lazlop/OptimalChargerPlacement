@@ -9,6 +9,7 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 import json
+import osmnx as ox
 
 print('='*10 + 'Start network file' + '='*10)
 
@@ -157,6 +158,77 @@ alameda_gdf = alameda_gdf.rename(columns={'GEOID_STR': 'geoid_str_'})
 alameda_gdf = alameda_gdf[alameda_gdf['geoid_str_'].str.contains('Alameda', case=False, na=False)]
 alameda_gdf['charging_demand'] = demand_df_filtered['mass'].values
 
+# =============================================
+# Begin POI analysis
+# =============================================
+
+# Load tag dictionaries
+ox.settings.use_cache = True
+ox.settings.log_console = False
+tab_buildings = pd.read_html('https://wiki.openstreetmap.org/wiki/Key:building', match='Value')[0]
+tab_amenities = pd.read_html('https://wiki.openstreetmap.org/wiki/Key:amenity', match='Value')[0]
+tab_shop = pd.read_html('https://wiki.openstreetmap.org/wiki/Key:shop', match='Value')[0]
+tab_leisure = pd.read_html('https://wiki.openstreetmap.org/wiki/Key:leisure', match='Value')[0]
+
+desired_buildings = ['office']
+desired_amenities = ['fitness_center', 'fast_food', 'bank']
+desired_shops = ['supermarket', 'mall']
+desired_leisure = ['park']
+
+# Get bounding box / polygon for Alameda only
+alameda_poly = alameda_gdf.unary_union  # union for bounding box only, polygons still separate later
+
+all_pois = []
+
+# Download each category separately
+poi_layers = {
+    "building": desired_buildings,
+    "amenity": desired_amenities,
+    "shop": desired_shops,
+    "leisure": desired_leisure
+}
+
+for key, values in poi_layers.items():
+    pois = ox.geometries_from_polygon(
+        alameda_poly,
+        tags={key: values}
+    )
+    pois["poi_type"] = key
+    all_pois.append(pois)
+
+# Merge into one GeoDataFrame
+pois_gdf = pd.concat(all_pois, ignore_index=True)
+pois_gdf = pois_gdf.to_crs(alameda_gdf.crs)  # ensure same CRS
+
+pois_joined = gpd.sjoin(
+    pois_gdf,
+    alameda_gdf[["geoid_str_", "geometry"]],
+    how="left",
+    predicate="within"
+)
+
+poi_counts = (
+    pois_joined.groupby(["geoid_str_", "poi_type"])
+    .size()
+    .unstack(fill_value=0)
+    .reset_index()
+)
+
+network_df = network_df.merge(
+    poi_counts,
+    how="left",
+    on="geoid_str_"
+)
+
+# Replace NaN with zeros for blocks with no POIs
+for c in ["amenity", "building", "shop", "leisure"]:
+    if c in network_df.columns:
+        network_df[c] = network_df[c].fillna(0)
+
+# =============================================
+# End POI analysis
+# =============================================
+
 # Simple heat map, keep for now
 # fig, ax = plt.subplots(figsize=(10, 10))
 
@@ -227,7 +299,7 @@ for _, row in alameda_chargers.iterrows():
         popup=f"Charger ID: {row['ID']}"  # optional popup
     ).add_to(m)
 
-    # Add chargers as points
+    # Add census tract centroids as points
 for _, row in alameda_gdf.iterrows():
     folium.CircleMarker(
         location=[row.geometry.centroid.y, row.geometry.centroid.x],
@@ -239,6 +311,22 @@ for _, row in alameda_gdf.iterrows():
         popup=f"Census Track ID: {row['geoid_str_']}"  # optional popup
     ).add_to(m)
 
+# Convert all geometries to points for plotting
+pois_gdf["plot_geom"] = pois_gdf.geometry.apply(
+    lambda geom: geom.centroid if geom.geom_type != "Point" else geom
+)
+# Add POIs as points
+for _, row in pois_gdf.iterrows():
+    pt = row.plot_geom
+    folium.CircleMarker(
+        location=[pt.y, pt.x],
+        radius=1,
+        color='purple',
+        fill=True,
+        fill_color='purple',
+        fill_opacity=0.6
+    ).add_to(m)
+
 # --- Add Custom HTML Legend for Markers ---
 legend_html = """
      <div style="position: fixed; 
@@ -247,7 +335,8 @@ legend_html = """
      background-color:white; opacity: 0.9;">
        &nbsp; <b>Map Legend</b> <br>
        &nbsp; <i style="background:green; color:green; border-radius:50%; margin-top: 5px; width: 10px; height: 10px; display:inline-block;"></i> &nbsp; Charging Station<br>
-       &nbsp; <i style="background:blue; color:blue; border-radius:50%; margin-top: 5px; width: 10px; height: 10px; display:inline-block;"></i> &nbsp; Census Block Centroid
+       &nbsp; <i style="background:blue; color:blue; border-radius:50%; margin-top: 5px; width: 10px; height: 10px; display:inline-block;"></i> &nbsp; Census Block Centroid<br>
+       &nbsp; <i style="background:purple; color:purple; border-radius:50%; margin-top: 5px; width: 10px; height: 10px; display:inline-block;"></i> &nbsp; POI<br>
      </div>
      """
 m.get_root().html.add_child(folium.Element(legend_html))
@@ -277,6 +366,132 @@ print(len(network_df['geoid_str_']))
 print(alameda_chargers.head())
 print(len(alameda_chargers['geoid_str_']))
 print(alameda_chargers['geoid_str_'].nunique())
+
+# ================================================
+# POI CALCS and PLOT
+# ================================================
+
+# Create weighted POI score for each node
+# Duplicates are included, will be filtered out later
+
+network_df['POI_SCORE'] = network_df['building']*3+network_df['shop']*2+network_df['leisure']*2+network_df['amenity']
+network_df = network_df.drop(['building', 'shop', 'leisure', 'amenity'], axis=1)
+
+# Left merge alameda_gdf with pois_gdf to assign census tract to each POI
+
+alameda_gdf['centroid'] = alameda_gdf.geometry.centroid
+pois_joined = gpd.sjoin(
+    pois_gdf,
+    alameda_gdf[['geoid_str_', 'centroid', 'geometry']],
+    how='left',
+    predicate='within'
+)
+pois_joined = pois_joined.dropna(subset=["centroid"])
+
+# Calculate haversine distance from each POI to its census tract centroid
+
+distances = []
+
+for _, poi in pois_joined.iterrows():
+    poi_rad = np.radians([poi.plot_geom.y, poi.plot_geom.x])
+    centroid_rad = np.radians([poi.centroid.y, poi.centroid.x])
+
+    d_rad = haversine_distances([poi_rad], [centroid_rad])[0][0]
+    d_m = d_rad * 6371
+
+    distances.append(d_m)
+
+pois_joined["dist_to_centroid_km"] = distances
+
+# Find avg distance from each centroid to its census tract POIs
+
+avg_distances = pois_joined.groupby("geoid_str_")["dist_to_centroid_km"].mean().reset_index()
+avg_distances = avg_distances.rename(columns={"dist_to_centroid_km": "avg_poi_dist_km"})
+
+# Add avg distances to alameda_gdf
+
+alameda_gdf = alameda_gdf.merge(avg_distances, how="left", on="geoid_str_")
+alameda_gdf["avg_poi_dist_km"] = alameda_gdf["avg_poi_dist_km"].fillna(0)
+
+# Create new heatmap to show where POIs are close and where they are far
+
+# --- Create interactive map ---
+m2 = folium.Map(
+    location=[alameda_gdf['INTPTLAT'].mean(), alameda_gdf['INTPTLON'].mean()],
+    zoom_start=10,
+    tiles='cartodbpositron'
+)
+
+# Add choropleth for charging demand
+folium.Choropleth(
+    geo_data=alameda_gdf.drop(columns=['centroid']),
+    name="Avg POI Distance to Centroid",
+    data=alameda_gdf,
+    columns=["geoid_str_", "avg_poi_dist_km"],
+    key_on="feature.properties.geoid_str_",
+    fill_color="Purples",
+    fill_opacity=0.7,
+    line_opacity=0.5,
+    legend_name="Avg POI Distance (km)"
+).add_to(m2)
+
+# Add tract tooltips
+folium.GeoJson(
+    alameda_gdf.drop(columns=['centroid']),
+    style_function=lambda x: {"fillColor": "transparent", "color": "black", "weight": 0.8},
+    tooltip=GeoJsonTooltip(
+        fields=["geoid_str_", "charging_demand"],
+        aliases=["Tract:", "Charging demand:"],
+        localize=True
+    )
+).add_to(m2)
+
+    # Add census tract centroids as points
+for _, row in alameda_gdf.iterrows():
+    folium.CircleMarker(
+        location=[row.geometry.centroid.y, row.geometry.centroid.x],
+        radius=1,
+        color='blue',
+        fill=True,
+        fill_color='blue',
+        fill_opacity=0.7,
+        popup=f"Census Track ID: {row['geoid_str_']}"  # optional popup
+    ).add_to(m2)
+
+# Convert all geometries to points for plotting
+pois_gdf["plot_geom"] = pois_gdf.geometry.apply(
+    lambda geom: geom.centroid if geom.geom_type != "Point" else geom
+)
+# Add POIs as points
+for _, row in pois_gdf.iterrows():
+    pt = row.plot_geom
+    folium.CircleMarker(
+        location=[pt.y, pt.x],
+        radius=1,
+        color='purple',
+        fill=True,
+        fill_color='purple',
+        fill_opacity=0.6
+    ).add_to(m2)
+
+# --- Add Custom HTML Legend for Markers ---
+legend_html = """
+     <div style="position: fixed; 
+     bottom: 50px; left: 50px; width: 200px; height: 90px; 
+     border:2px solid grey; z-index:9999; font-size:14px;
+     background-color:white; opacity: 0.9;">
+       &nbsp; <b>Map Legend</b> <br>
+       &nbsp; <i style="background:blue; color:blue; border-radius:50%; margin-top: 5px; width: 10px; height: 10px; display:inline-block;"></i> &nbsp; Census Block Centroid<br>
+       &nbsp; <i style="background:purple; color:purple; border-radius:50%; margin-top: 5px; width: 10px; height: 10px; display:inline-block;"></i> &nbsp; POI<br>
+     </div>
+     """
+m2.get_root().html.add_child(folium.Element(legend_html))
+# --- End Custom HTML Legend ---
+
+# --- Save and open map ---
+output_file = "alameda_POI_map.html"
+m2.save(output_file)
+print(f"Interactive map saved as {output_file}. Open this file in a web browser to explore.")
 
 print('='*10 + 'Finish network file' + '='*10)
 
