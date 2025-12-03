@@ -551,8 +551,14 @@ network_df = network_df.merge(
     right_on=['orig_geoid_str', 'dest_geoid_str'], 
     how='left'                     
 )
+#check
+#print(list(network_df.columns))
 
-print(list(network_df.columns))
+# =============================================
+# End: Add travel time to network_df
+# =============================================
+
+
 print('='*10 + 'Finish network file' + '='*10)
 
 
