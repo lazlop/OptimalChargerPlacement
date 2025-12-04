@@ -493,6 +493,72 @@ output_file = "alameda_POI_map.html"
 m2.save(output_file)
 print(f"Interactive map saved as {output_file}. Open this file in a web browser to explore.")
 
+# =============================================
+# Start: Add travel time to network_df
+# =============================================
+import osmnx as ox
+import networkx as nx
+
+#create network for osmnx
+G = ox.graph_from_place("Alameda County, California, USA", network_type="drive")
+G = ox.speed.add_edge_speeds(G)
+G = ox.speed.add_edge_travel_times(G)
+
+#create travel time df of origin destination pairs and respective lat/lon 
+tt_df = network_df[['geoid_str_', 'INTPTLAT', 'INTPTLON', 'NEIGHBOURS']].copy()
+tt_df.columns = ["orig_geoid_str", "orig_lat", "orig_lon", "dest_geoid_str"]
+
+tt_df = tt_df.merge(
+    gdf_subset,
+    left_on='dest_geoid_str',  # column in table1
+    right_on='geoid_str_',       # column in table2
+    how='left'
+)
+
+tt_df = tt_df.drop(columns = ["NEIGHBOURS", "geoid_str_"])
+tt_df = tt_df.rename(columns={'INTPTLAT': 'dest_lat'})
+tt_df = tt_df.rename(columns={'INTPTLON': 'dest_lon'})
+
+# snap OD pair to node on G
+tt_df["origin_node"] = ox.distance.nearest_nodes(
+    G,
+    tt_df["orig_lon"].values,
+    tt_df["orig_lat"].values
+)
+
+tt_df["dest_node"] = ox.distance.nearest_nodes(
+    G,
+    tt_df["dest_lon"].values,
+    tt_df["dest_lat"].values
+)
+
+def compute_tt(row):
+    try:
+        return nx.shortest_path_length(
+            G,
+            source=row["origin_node"],
+            target=row["dest_node"],
+            weight="travel_time"
+        )
+    except:
+        return np.nan  # unreachable
+
+tt_df["travel_time_sec"] = tt_df.apply(compute_tt, axis=1)
+tt_df["travel_time_min"] = tt_df["travel_time_sec"] / 60
+network_df = network_df.merge(
+    tt_df[['orig_geoid_str', 'dest_geoid_str', "travel_time_min", "travel_time_sec"]],
+    left_on=['geoid_str_', 'NEIGHBOURS'],  
+    right_on=['orig_geoid_str', 'dest_geoid_str'], 
+    how='left'                     
+)
+#check
+#print(list(network_df.columns))
+
+# =============================================
+# End: Add travel time to network_df
+# =============================================
+
+
 print('='*10 + 'Finish network file' + '='*10)
 
 
