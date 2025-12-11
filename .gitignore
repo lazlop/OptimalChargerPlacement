@@ -223,5 +223,5 @@ data/**/*
 .DS_Store
 uv.lock
 optimization-formulation.md
-cache/**
-notebooks/cache/**
+# ignore generated html maps
+*.html
